@@ -6,7 +6,7 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 # Binary paramters
 BINARY_PATH=bin
-BINARY_NAME=ali-ecs-buyer
+BINARY_NAME=ali-ecs-deleter
 BINARY_DARWIN_AMD64=$(BINARY_PATH)/darwin/amd64/$(BINARY_NAME)
 BINARY_LINUX_ARM64=$(BINARY_PATH)/linux/arm64/$(BINARY_NAME)
 BINARY_ARCHVIE_PATH=archive
@@ -15,7 +15,8 @@ zip: build $(BINARY_ARCHVIE_PATH)
 	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz bin
 $(BINARY_ARCHVIE_PATH):
 	mkdir -p $(BINARY_ARCHVIE_PATH)
-build: build-mac build-linux
+# build: build-mac build-linux
+build: build-linux
 test: 
 	$(GOTEST) -v ./...
 clean: 
