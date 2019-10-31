@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+	"github.com/relvacode/iso8601"
+	"github.com/yaa110/sslice"
 	cli "gopkg.in/urfave/cli.v1"
 )
 
@@ -23,6 +26,8 @@ const (
 	vpcIDShort           = "p"
 	nodeCountLong        = "node-count"
 	nodeCountShort       = "n"
+	deleteStrategyLong   = "delete-strategy"
+	deleteStrategyShort  = "d"
 	debugKeyLong         = "debug"
 )
 
@@ -62,6 +67,11 @@ func main() {
 			Usage: "移除节点数量",
 			Value: 1,
 		},
+		cli.StringFlag{
+			Name:  "delete-strategy,d",
+			Usage: "移除策略，支持\"oldest\"/\"latest\"，即最旧/最新优先原则",
+			Value: "oldest",
+		},
 		cli.BoolFlag{
 			Name:  debugKeyLong,
 			Usage: "调试用，不直接运行",
@@ -76,12 +86,13 @@ func main() {
 }
 
 type EcsConfig struct {
-	RegionId     string `yaml:"region-id"`
-	AccessId     string `yaml:"access-key-id"`
-	AccessSecret string `yaml:"access-key-secret"`
-	VPCId        string `yaml:"vpc-id"`
-	NodeCount    *int   `yaml:"node-count,omitempty"`
-	Debug        *bool  `yaml:"debug,omitempty"`
+	RegionId     string  `yaml:"region-id"`
+	AccessId     string  `yaml:"access-key-id"`
+	AccessSecret string  `yaml:"access-key-secret"`
+	VPCId        string  `yaml:"vpc-id"`
+	NodeCount    *int    `yaml:"node-count,omitempty"`
+	StrategyMode *string `yaml:"strategy-mode,omitempty"`
+	Debug        *bool   `yaml:"debug,omitempty"`
 }
 
 func startClient(ctx *cli.Context) error {
@@ -89,6 +100,8 @@ func startClient(ctx *cli.Context) error {
 	var vpcID string
 	var nodeCount int
 	debugMode := false
+	deleteStrategy := "oldest"
+
 	if path := ctx.String(configFileLong); len(path) > 0 {
 		var cfg EcsConfig
 		if err := ReadYamlFile(path, &cfg); err != nil {
@@ -105,6 +118,11 @@ func startClient(ctx *cli.Context) error {
 		} else {
 			nodeCount = ctx.Int(nodeCountLong)
 		}
+		if cfg.StrategyMode != nil {
+			deleteStrategy = *cfg.StrategyMode
+		} else {
+			deleteStrategy = ctx.String(deleteStrategyLong)
+		}
 
 		if cfg.Debug != nil {
 			debugMode = *cfg.Debug
@@ -115,6 +133,7 @@ func startClient(ctx *cli.Context) error {
 		accessSecret = ctx.String(accessKeySecretLong)
 		vpcID = ctx.String(vpcIDLong)
 		nodeCount = ctx.Int(nodeCountLong)
+		deleteStrategy = ctx.String(deleteStrategyLong)
 		debugMode = ctx.Bool(debugKeyLong)
 	}
 
@@ -129,105 +148,126 @@ func startClient(ctx *cli.Context) error {
 		return err
 	}
 
-	// 筛选节点未按量付费版本并按创建时间排序
-	var instanceRets = make([]<-chan instancePostChargedCheckResult, len(instances))
-	var instancePostCharges = make([]bool, len(instances))
-	var wg sync.WaitGroup
-	wg.Add(len(instances))
-	for _, instance := range instances {
-		ret := checkIfInstancePostCharged(instance.InstanceId, client, &wg)
-		instanceRets = append(instanceRets, ret)
+	if len(instances) == 0 {
+		return fmt.Errorf("no instance to be removed (want %v)", nodeCount)
 	}
-	wg.Wait()
-	for idx, ret := range instanceRets {
-		for {
-			select {
-			case result := <-ret:
-				instancePostCharges[idx] = result.IsPostCharged
-			default:
-				fmt.Println("collect done, go back")
-				break
-			}
-		}
-	}
-	//filter and sort
 
-	// results := make([]<-chan instancePostChargedCheckResult, len(instances))
-	// for _, instance := range instances {
-	// 	result := checkIfInstancePostCharged(instance.InstanceId, client)
-	// 	results = append(results, result)
-	// }
-	// merge(func(c <-chan instancePostChargedCheckResult, wg *sync.WaitGroup) {
-	// 	wg.Done() //减少一个goroutine
-	// }, results...)
+	// 筛选节点未按量付费版本并按创建时间排序
+	ids, err := filterNodes(client, instances, nodeCount, deleteStrategy)
+	if err != nil {
+		return err
+	}
 
 	// 停止N个节点
-	mode := "release"
-	if debugMode {
-		mode = "debug"
+	for _, id := range ids {
+		if _, err := stopInstance(id, client, debugMode); err != nil {
+			return (err)
+		}
 	}
-	fmt.Printf("we need to stop %v nodes, in %v mode", nodeCount, mode)
 
 	// 删除N个节点
+	if len(ids) > 0 {
+		if _, err := deleteInstances(&ids, client, debugMode); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
+func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy string) ([]string, error) {
+	var ids []string
+
+	rets := sslice.New(false)
+	var lock sync.Mutex //互斥锁
+	appendValue := func(ret *instancePostChargedCheckResult) {
+		lock.Lock() //加锁
+		rets.Push(ret)
+		lock.Unlock() //解锁
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(instances))
+	for idx, instance := range instances {
+		go func(idx int, instance ecs.Instance) {
+			defer wg.Done()
+			ret := checkIfInstancePostCharged(idx, instance.InstanceId, client)
+			if ret.Err != nil || !ret.IsPostCharged { // 排除错误和包月/年节点
+				return
+			}
+			appendValue(&ret)
+		}(idx, instance)
+	}
+	wg.Wait()
+	// 取出前几个
+	length := rets.Len()
+	if filterCount > length {
+		filterCount = length
+	}
+	switch deleteStrategy {
+	case "oldest":
+		// do nothing
+	case "latest":
+		rets.Reverse()
+	default:
+		return nil, fmt.Errorf("the delete strategy not supported: %v", deleteStrategy)
+	}
+	for idx := 0; idx < filterCount; idx++ {
+		element := rets.Get(idx).(*instancePostChargedCheckResult)
+		ids = append(ids, element.InstanceId)
+	}
+	return ids, nil
+}
+
+func deleteInstances(ids *[]string, client *ecs.Client, debugMode bool) (*ecs.DeleteInstancesResponse, error) {
+	request := ecs.CreateDeleteInstancesRequest()
+	request.InstanceId = ids
+	request.ClientToken = fmt.Sprintf("%v", time.Now().Second())
+	request.DryRun = requests.NewBoolean(debugMode)
+	return client.DeleteInstances(request)
+}
+
+func stopInstance(id string, client *ecs.Client, debugMode bool) (*ecs.StopInstanceResponse, error) {
+	request := ecs.CreateStopInstanceRequest()
+	request.InstanceId = id
+	request.DryRun = requests.NewBoolean(debugMode)
+	return client.StopInstance(request)
+}
+
 type instancePostChargedCheckResult struct {
-	IsPostCharged bool // YES, 按量付费
+	Index         int
+	InstanceId    string
+	IsPostCharged bool   // YES, 按量付费
+	CreateTime    string // 实例创建时间，采用ISO8601表示法，并使用UTC时间，格式为：YYYY-MM-DDThh:mm:ssZ。
 	Err           error
 }
 
-// 查看实例是否为按量付费
-func checkIfInstancePostCharged(instanceID string, client *ecs.Client, wg *sync.WaitGroup) <-chan instancePostChargedCheckResult {
-	out := make(chan instancePostChargedCheckResult)
-	go func() {
-		defer close(out)
-		defer (*wg).Done()
-		request := ecs.CreateDescribeInstanceAttributeRequest()
-		request.InstanceId = instanceID
-		resp, err := client.DescribeInstanceAttribute(request)
-		if err != nil {
-			out <- instancePostChargedCheckResult{false, err}
-			return
-		}
-		out <- instancePostChargedCheckResult{resp.InstanceChargeType == "PostPaid", nil}
-	}()
-	return out
-}
-
-func checkIfInstancePostChargedByChan(instanceID string, client *ecs.Client) <-chan instancePostChargedCheckResult {
-	out := make(chan instancePostChargedCheckResult)
-	go func() {
-		defer close(out)
-		request := ecs.CreateDescribeInstanceAttributeRequest()
-		request.InstanceId = instanceID
-		resp, err := client.DescribeInstanceAttribute(request)
-		if err != nil {
-			out <- instancePostChargedCheckResult{false, err}
-			return
-		}
-		out <- instancePostChargedCheckResult{resp.InstanceChargeType == "PostPaid", nil}
-	}()
-	return out
-}
-
-func merge(output func(c <-chan instancePostChargedCheckResult, wg *sync.WaitGroup), cs ...<-chan instancePostChargedCheckResult) <-chan error {
-	var wg sync.WaitGroup
-	out := make(chan error)
-
-	wg.Add(len(cs)) //要执行的goroutine个数
-	for _, c := range cs {
-		go output(c, &wg) //对传入的多个channel执行output
+func (ipcr *instancePostChargedCheckResult) Compare(other sslice.SortableElement) int {
+	thisTime, err := iso8601.Parse([]byte(ipcr.CreateTime))
+	if err != nil {
+		panic(err)
 	}
+	otherTime, err := iso8601.Parse([]byte(other.(*instancePostChargedCheckResult).CreateTime))
+	if err != nil {
+		panic(err)
+	}
+	if thisTime.Before(otherTime) {
+		return -1
+	} else if thisTime.After(otherTime) {
+		return 1
+	} else {
+		return 0
+	}
+}
 
-	// Start a goroutine to close out once all the output goroutines are
-	// done.  This must start after the wg.Add call.
-	go func() {
-		wg.Wait()  //等待，直到所有goroutine都完成后
-		close(out) //所有的都放到out后关闭
-	}()
-	return out
+// 查看实例是否为按量付费
+func checkIfInstancePostCharged(idx int, instanceID string, client *ecs.Client) instancePostChargedCheckResult {
+	request := ecs.CreateDescribeInstanceAttributeRequest()
+	request.InstanceId = instanceID
+	resp, err := client.DescribeInstanceAttribute(request)
+	if err != nil {
+		return instancePostChargedCheckResult{idx, instanceID, false, "", err}
+	}
+	return instancePostChargedCheckResult{idx, instanceID, resp.InstanceChargeType == "PostPaid", resp.CreationTime, nil}
 }
 
 func getInstancesOf(vpcID string, client *ecs.Client) (instances []ecs.Instance, err error) {
