@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -153,9 +154,27 @@ func startClient(ctx *cli.Context) error {
 	}
 
 	// 筛选节点未按量付费版本并按创建时间排序
-	ids, err := filterNodes(client, instances, nodeCount, deleteStrategy)
+	rets, err := filterNodes(client, instances, nodeCount, deleteStrategy)
 	if err != nil {
 		return err
+	}
+
+	// 测试用，记得删除
+	// rets = []*instancePostChargedCheckResult{
+	// 	&instancePostChargedCheckResult{
+	// 		HostName: "wjlfw02",
+	// 	},
+	// }
+
+	// 移除节点标签
+	if err := deleteInstancesFromOWCluster(rets); err != nil {
+		return err
+	}
+
+	// 拼接ID
+	var ids []string
+	for _, ret := range rets {
+		ids = append(ids, ret.InstanceId)
 	}
 
 	// 停止N个节点
@@ -175,8 +194,27 @@ func startClient(ctx *cli.Context) error {
 	return nil
 }
 
-func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy string) ([]string, error) {
-	var ids []string
+func deleteInstancesFromOWCluster(infos []*instancePostChargedCheckResult) error {
+	if len(infos) == 0 {
+		return nil
+	}
+
+	var names string
+	for idx, info := range infos {
+		names += info.HostName
+		if idx < len(infos)-1 {
+			names += ","
+		}
+	}
+
+	_, err := exec.Command("./delete-k8s.sh", "-n", names).Output()
+	return err
+}
+
+func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy string) ([]*instancePostChargedCheckResult, error) {
+	if len(instances) == 0 {
+		return nil, nil
+	}
 
 	rets := sslice.New(false)
 	var lock sync.Mutex //互斥锁
@@ -211,11 +249,11 @@ func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, 
 	default:
 		return nil, fmt.Errorf("the delete strategy not supported: %v", deleteStrategy)
 	}
+	var infos []*instancePostChargedCheckResult
 	for idx := 0; idx < filterCount; idx++ {
-		element := rets.Get(idx).(*instancePostChargedCheckResult)
-		ids = append(ids, element.InstanceId)
+		infos = append(infos, rets.Get(idx).(*instancePostChargedCheckResult))
 	}
-	return ids, nil
+	return infos, nil
 }
 
 func deleteInstances(ids *[]string, client *ecs.Client, debugMode bool) (*ecs.DeleteInstancesResponse, error) {
@@ -238,6 +276,8 @@ type instancePostChargedCheckResult struct {
 	InstanceId    string
 	IsPostCharged bool   // YES, 按量付费
 	CreateTime    string // 实例创建时间，采用ISO8601表示法，并使用UTC时间，格式为：YYYY-MM-DDThh:mm:ssZ。
+	HostName      string
+	InnerIP       string
 	Err           error
 }
 
@@ -265,9 +305,9 @@ func checkIfInstancePostCharged(idx int, instanceID string, client *ecs.Client) 
 	request.InstanceId = instanceID
 	resp, err := client.DescribeInstanceAttribute(request)
 	if err != nil {
-		return instancePostChargedCheckResult{idx, instanceID, false, "", err}
+		return instancePostChargedCheckResult{idx, instanceID, false, "", "", "", err}
 	}
-	return instancePostChargedCheckResult{idx, instanceID, resp.InstanceChargeType == "PostPaid", resp.CreationTime, nil}
+	return instancePostChargedCheckResult{idx, instanceID, resp.InstanceChargeType == "PostPaid", resp.CreationTime, resp.HostName, resp.InnerIpAddress.IpAddress[0], nil}
 }
 
 func getInstancesOf(vpcID string, client *ecs.Client) (instances []ecs.Instance, err error) {
