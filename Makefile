@@ -16,6 +16,7 @@ OUTPUT_BIN=output
 all: zip $(OUTPUT_BIN)
 	cp $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz $(OUTPUT_BIN)
 	cp delete-k8s.sh $(OUTPUT_BIN)
+	cp test/test.yaml $(OUTPUT_BIN)
 zip: build $(BINARY_ARCHVIE_PATH)
 	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz bin
 $(BINARY_ARCHVIE_PATH):
