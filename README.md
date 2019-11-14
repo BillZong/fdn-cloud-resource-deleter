@@ -1,5 +1,5 @@
 It's tool using in fdn.
-Buy cloud resource in configurable way.
+Delete cloud resource in configurable way.
 
 **TODO:**
 
