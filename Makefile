@@ -8,6 +8,7 @@ GOGET=$(GOCMD) get
 BINARY_PATH=bin
 BINARY_NAME=ali-ecs-deleter
 BINARY_DARWIN_AMD64=$(BINARY_PATH)/darwin/amd64/$(BINARY_NAME)
+BINARY_LINUX_AMD64=$(BINARY_PATH)/linux/amd64/$(BINARY_NAME)
 BINARY_LINUX_ARM64=$(BINARY_PATH)/linux/arm64/$(BINARY_NAME)
 BINARY_ARCHVIE_PATH=archive
 OUTPUT_BIN=output
@@ -41,7 +42,9 @@ run:
 build-mac: build-mac-amd64
 build-mac-amd64:
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 $(GOBUILD) -o $(BINARY_DARWIN_AMD64) -v
-build-linux: build-linux-arm64
+build-linux: build-linux-amd64
+build-linux-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_LINUX_AMD64) -v
 build-linux-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_LINUX_ARM64) -v
 # docker-build:
