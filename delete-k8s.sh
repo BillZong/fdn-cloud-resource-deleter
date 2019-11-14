@@ -52,8 +52,8 @@ done
 # 将所有节点的标签删除，并移除节点
 if [ -n "$namesArr" ]; then
     for nodeName in ${namesArr[@]}; do
-        kubectl label nodes $nodeName openwhisk-role- --overwrite && kubectl drain $nodeName --delete-local-data --ignore-daemonsets --grace-period 10 && kubectl delete node $nodeName
+        kubectl label nodes $nodeName openwhisk-role- --overwrite && kubectl drain $nodeName --delete-local-data --ignore-daemonsets --grace-period 10 --force && kubectl delete node $nodeName
     done
 else
-    kubectl label nodes $names openwhisk-role- --overwrite && kubectl drain $names --delete-local-data --ignore-daemonsets --grace-period 10 && kubectl delete node $names
+    kubectl label nodes $names openwhisk-role- --overwrite && kubectl drain $names --delete-local-data --ignore-daemonsets --grace-period 10 --force && kubectl delete node $names
 fi
