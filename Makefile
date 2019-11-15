@@ -6,7 +6,8 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 # Binary paramters
 BINARY_PATH=bin
-BINARY_NAME=ali-ecs-deleter
+BINARY_NAME=node-deleter
+BINARY_CONFIG_NAME=$(BINARY_NAME)-configs.yaml
 BINARY_DARWIN_AMD64=$(BINARY_PATH)/darwin/amd64/$(BINARY_NAME)
 BINARY_LINUX_AMD64=$(BINARY_PATH)/linux/amd64/$(BINARY_NAME)
 BINARY_LINUX_ARM64=$(BINARY_PATH)/linux/arm64/$(BINARY_NAME)
@@ -14,9 +15,12 @@ BINARY_ARCHVIE_PATH=archive
 OUTPUT_BIN=output
 
 all: zip $(OUTPUT_BIN)
+    # copy to output directory, so that we could package and deploy it.
 	cp $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz $(OUTPUT_BIN)
+	# important joiner scripts
 	cp delete* $(OUTPUT_BIN)
-	cp test/test.yaml $(OUTPUT_BIN)
+	# config only for testing, should be replaced when deplyed.
+	cp test/test.yaml $(OUTPUT_BIN)/$(BINARY_CONFIG_NAME)
 zip: build $(BINARY_ARCHVIE_PATH)
 	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz bin
 $(BINARY_ARCHVIE_PATH):
