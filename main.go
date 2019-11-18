@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -16,21 +17,8 @@ import (
 )
 
 const (
-	regionIDLong         = "region-id"
-	regionIDShort        = "r"
-	accessKeyIDLong      = "access-key-id"
-	accessKeyIDShort     = "k"
-	accessKeySecretLong  = "access-key-secret"
-	accessKeySecretShort = "s"
-	configFileLong       = "config"
-	configFileShort      = "c"
-	vpcIDLong            = "vpc-id"
-	vpcIDShort           = "p"
-	nodeCountLong        = "node-count"
-	nodeCountShort       = "n"
-	deleteStrategyLong   = "delete-strategy"
-	deleteStrategyShort  = "d"
-	debugKeyLong         = "debug"
+	configFilePathLongFlag = "config"
+	nodeCountLongFlag      = "node-count"
 )
 
 const (
@@ -67,6 +55,8 @@ dynamic:
     ssh-key-file: "./key-20191106"
     # password, no need when use ssh private key login
     password: "123456Abc"
+    # # delete strategy, "oldest"/"newest". When no set, no strategy taken
+    # delete-strategy: "oldest"
     # Debug Parameters
     # Debug mode. default false
     debug: false
@@ -114,40 +104,16 @@ func main() {
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "config,c",
-			Usage: "配置文件路径，使用后必选参数使用该文件内容，可选参数优先使用该文件内容",
-		},
-		cli.StringFlag{
-			Name:  "region-id,r",
-			Usage: "区域编号，要求一定要有",
-		},
-		cli.StringFlag{
-			Name:  "access-key-id,k",
-			Usage: "授权KeyID",
-		},
-		cli.StringFlag{
-			Name:  "access-key-secret,s",
-			Usage: "授权Key秘钥",
-		},
-		cli.StringFlag{
-			Name:  "vpc-id,p",
-			Usage: "专用网络ID",
+			Usage: "config file path, must have.",
+			Value: "./node-joiner-configs.yaml",
 		},
 		cli.IntFlag{
-			Name:  "node-count,n",
-			Usage: "移除节点数量",
+			Name:  nodeCountLongFlag,
+			Usage: "node count that want to be join",
 			Value: 1,
 		},
-		cli.StringFlag{
-			Name:  "delete-strategy,d",
-			Usage: "移除策略，支持\"oldest\"/\"latest\"，即最旧/最新优先原则",
-			Value: "oldest",
-		},
-		cli.BoolFlag{
-			Name:  debugKeyLong,
-			Usage: "调试用，不直接运行",
-		},
 	}
-	app.Action = startClient
+	app.Action = deleteFromOWCluster
 
 	err := app.Run(os.Args)
 	if err != nil {
@@ -168,65 +134,84 @@ func showTemplate(ctx *cli.Context) error {
 	return nil
 }
 
-type EcsConfig struct {
-	RegionId     string  `yaml:"region-id"`
-	AccessId     string  `yaml:"access-key-id"`
-	AccessSecret string  `yaml:"access-key-secret"`
-	VPCId        string  `yaml:"vpc-id"`
-	NodeCount    *int    `yaml:"node-count,omitempty"`
-	StrategyMode *string `yaml:"strategy-mode,omitempty"`
-	Debug        *bool   `yaml:"debug,omitempty"`
+type NodeInfo struct {
+	InnerIP  string `yaml:"inner-ip"`
+	HostName string `yaml:"host-name"`
 }
 
-func startClient(ctx *cli.Context) error {
-	var regionID, accessKey, accessSecret string
-	var vpcID string
-	var nodeCount int
-	debugMode := false
-	deleteStrategy := "oldest"
+type FixedNodeConfig struct {
+	SSHPort    int         `yaml:"ssh-port,omitempty"`
+	UserName   string      `yaml:"user-name,omitempty"`
+	SSHKeyFile *string     `yaml:"ssh-key-file,omitempty"`
+	Password   *string     `yaml:"password,omitempty"`
+	Nodes      []*NodeInfo `yaml:"nodes"`
+}
 
-	if path := ctx.String(configFileLong); len(path) > 0 {
-		var cfg EcsConfig
-		if err := ReadYamlFile(path, &cfg); err != nil {
-			return err
-		}
-		regionID = cfg.RegionId
-		accessKey = cfg.AccessId
-		accessSecret = cfg.AccessSecret
-		vpcID = cfg.VPCId
+type AliyunEcsConfig struct {
+	RegionID       string  `yaml:"region-id"`
+	AccessID       string  `yaml:"access-key-id"`
+	AccessSecret   string  `yaml:"access-key-secret"`
+	VpcID          string  `yaml:"vpc-id"`
+	SSHPort        *int    `yaml:"ssh-port,omitempty"`
+	SSHKeyFile     *string `yaml:"ssh-key-file,omitempty"`
+	Password       *string `yaml:"password,omitempty"`
+	DeleteStrategy *string `yaml:"delete-strategy,omitempty"`
+	Debug          *bool   `yaml:"debug,omitempty"`
+}
 
-		// optional args for default value
-		if cfg.NodeCount != nil {
-			nodeCount = *cfg.NodeCount
-		} else {
-			nodeCount = ctx.Int(nodeCountLong)
-		}
-		if cfg.StrategyMode != nil {
-			deleteStrategy = *cfg.StrategyMode
-		} else {
-			deleteStrategy = ctx.String(deleteStrategyLong)
-		}
+type DynamicNodeConfig struct {
+	CloudProvider string           `yaml:"cloud-provider"`
+	AliyunConfig  *AliyunEcsConfig `yaml:"aliyun,omitempty"`
+}
 
-		if cfg.Debug != nil {
-			debugMode = *cfg.Debug
-		}
-	} else {
-		regionID = ctx.String(regionIDLong)
-		accessKey = ctx.String(accessKeyIDLong)
-		accessSecret = ctx.String(accessKeySecretLong)
-		vpcID = ctx.String(vpcIDLong)
-		nodeCount = ctx.Int(nodeCountLong)
-		deleteStrategy = ctx.String(deleteStrategyLong)
-		debugMode = ctx.Bool(debugKeyLong)
+type TopLevelConfigs struct {
+	ClusterType   string             `yaml:"cluster-type"`
+	FixedConfig   *FixedNodeConfig   `yaml:"fixed,omitempty"`
+	DynamicConfig *DynamicNodeConfig `yaml:"dynamic,omitempty"`
+	NodeCount     *int               `yaml:"node-count,omitempty"`
+}
+
+func deleteFromOWCluster(ctx *cli.Context) error {
+	var cfg = TopLevelConfigs{
+		ClusterType: "fixed",
+		FixedConfig: &FixedNodeConfig{
+			SSHPort:  22,
+			UserName: "root",
+		},
+	}
+	configPath := ctx.String(configFilePathLongFlag)
+	if len(configPath) == 0 {
+		return fmt.Errorf("config file not existed")
+	}
+	if err := ReadYamlFile(configPath, &cfg); err != nil {
+		return err
+	}
+	if cfg.NodeCount == nil {
+		nodeCount := ctx.Int(nodeCountLongFlag)
+		cfg.NodeCount = &nodeCount
 	}
 
-	client, err := ecs.NewClientWithAccessKey(regionID, accessKey, accessSecret)
+	if cfg.ClusterType == "fixed" {
+		return fmt.Errorf("fixed type not supported yet")
+		// return handleFixedConfigs(cfg.FixedConfig, *cfg.NodeCount)
+	} else if cfg.ClusterType == "dynamic" {
+		if cfg.DynamicConfig.CloudProvider != "aliyun" {
+			return fmt.Errorf("cloud provider (%v) not supported yet", cfg.DynamicConfig.CloudProvider)
+		}
+		return handleAliyunECSConfigs(cfg.DynamicConfig.AliyunConfig, *cfg.NodeCount)
+	} else {
+		return fmt.Errorf("cluster type (%v) not supported yet", cfg.ClusterType)
+	}
+}
+
+func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
+	client, err := ecs.NewClientWithAccessKey(cfg.RegionID, cfg.AccessID, cfg.AccessSecret)
 	if err != nil {
 		return err
 	}
 
 	// 根据VPC配置读取节点信息
-	instances, err := getInstancesOf(vpcID, client)
+	instances, err := getInstancesOf(cfg.VpcID, client)
 	if err != nil {
 		return err
 	}
@@ -236,20 +221,26 @@ func startClient(ctx *cli.Context) error {
 	}
 
 	// 筛选节点未按量付费版本并按创建时间排序
-	rets, err := filterNodes(client, instances, nodeCount, deleteStrategy)
+	rets, err := filterNodes(client, instances, nodeCount, cfg.DeleteStrategy)
 	if err != nil {
 		return err
 	}
 
-	// 测试用，记得删除
-	// rets = []*instancePostChargedCheckResult{
-	// 	&instancePostChargedCheckResult{
-	// 		HostName: "wjlfw02",
-	// 	},
-	// }
-
 	// 移除节点标签
-	if err := deleteInstancesFromOWCluster(rets); err != nil {
+	var port int
+	if cfg.SSHPort != nil {
+		port = *cfg.SSHPort
+	} else {
+		port = 22
+	}
+	infos := make([]*NodeInfo, 0)
+	for _, ret := range rets {
+		infos = append(infos, &NodeInfo{
+			InnerIP:  ret.InnerIP,
+			HostName: ret.HostName,
+		})
+	}
+	if err := deleteInstancesFromOWCluster(infos, port, "root", cfg.Password, cfg.SSHKeyFile); err != nil {
 		return err
 	}
 
@@ -261,14 +252,14 @@ func startClient(ctx *cli.Context) error {
 
 	// 停止N个节点
 	for _, id := range ids {
-		if _, err := stopInstance(id, client, debugMode); err != nil {
+		if _, err := stopInstance(id, client, cfg.Debug); err != nil {
 			return (err)
 		}
 	}
 
 	// 删除N个节点
 	if len(ids) > 0 {
-		if _, err := deleteInstances(&ids, client, debugMode); err != nil {
+		if _, err := deleteInstances(&ids, client, cfg.Debug); err != nil {
 			return err
 		}
 	}
@@ -276,34 +267,51 @@ func startClient(ctx *cli.Context) error {
 	return nil
 }
 
-func deleteInstancesFromOWCluster(infos []*instancePostChargedCheckResult) error {
+func deleteInstancesFromOWCluster(infos []*NodeInfo, nodeSSHPort int, user string, sshKeyFile, password *string) error {
 	if len(infos) == 0 {
 		return nil
 	}
 
-	var names string
+	var ips, names string
 	for idx, info := range infos {
+		ips += info.InnerIP
 		names += info.HostName
 		if idx < len(infos)-1 {
+			ips += ","
 			names += ","
 		}
 	}
 
-	_, err := exec.Command("./delete-k8s.sh", "-n", names).Output()
+	if sshKeyFile != nil && len(*sshKeyFile) > 0 {
+		// 使用私钥文件ssh登陆
+		_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-s", *sshKeyFile).Output()
+		return err
+	}
+
+	// 使用密码ssh登陆
+	_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-p", *password).Output()
 	return err
 }
 
-func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy string) ([]*instancePostChargedCheckResult, error) {
+func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy *string) ([]*instancePostChargedCheckResult, error) {
 	if len(instances) == 0 {
 		return nil, nil
 	}
 
-	rets := sslice.New(false)
-	var lock sync.Mutex //互斥锁
+	if deleteStrategy == nil {
+		return filterNotSortedNodes(client, instances, filterCount)
+	}
+
+	return filterSortedNodes(client, instances, filterCount, *deleteStrategy)
+}
+
+func filterNotSortedNodes(client *ecs.Client, instances []ecs.Instance, filterCount int) ([]*instancePostChargedCheckResult, error) {
+	rets := make([]*instancePostChargedCheckResult, 0)
+	var lock sync.Mutex
 	appendValue := func(ret *instancePostChargedCheckResult) {
-		lock.Lock() //加锁
-		rets.Push(ret)
-		lock.Unlock() //解锁
+		lock.Lock()
+		rets = append(rets, ret)
+		lock.Unlock()
 	}
 	var wg sync.WaitGroup
 	wg.Add(len(instances))
@@ -318,7 +326,36 @@ func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, 
 		}(idx, instance)
 	}
 	wg.Wait()
-	// 取出前几个
+	// get the front ones
+	length := len(rets)
+	if filterCount > length {
+		filterCount = length
+	}
+	return rets[:filterCount], nil
+}
+
+func filterSortedNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, deleteStrategy string) ([]*instancePostChargedCheckResult, error) {
+	rets := sslice.New(false)
+	var lock sync.Mutex
+	appendValue := func(ret *instancePostChargedCheckResult) {
+		lock.Lock()
+		rets.Push(ret)
+		lock.Unlock()
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(instances))
+	for idx, instance := range instances {
+		go func(idx int, instance ecs.Instance) {
+			defer wg.Done()
+			ret := checkIfInstancePostCharged(idx, instance.InstanceId, client)
+			if ret.Err != nil || !ret.IsPostCharged { // 排除错误和包月/年节点
+				return
+			}
+			appendValue(&ret)
+		}(idx, instance)
+	}
+	wg.Wait()
+	// get the front ones
 	length := rets.Len()
 	if filterCount > length {
 		filterCount = length
@@ -338,18 +375,22 @@ func filterNodes(client *ecs.Client, instances []ecs.Instance, filterCount int, 
 	return infos, nil
 }
 
-func deleteInstances(ids *[]string, client *ecs.Client, debugMode bool) (*ecs.DeleteInstancesResponse, error) {
+func deleteInstances(ids *[]string, client *ecs.Client, debugMode *bool) (*ecs.DeleteInstancesResponse, error) {
 	request := ecs.CreateDeleteInstancesRequest()
 	request.InstanceId = ids
 	request.ClientToken = fmt.Sprintf("%v", time.Now().Second())
-	request.DryRun = requests.NewBoolean(debugMode)
+	if debugMode != nil {
+		request.DryRun = requests.NewBoolean(*debugMode)
+	}
 	return client.DeleteInstances(request)
 }
 
-func stopInstance(id string, client *ecs.Client, debugMode bool) (*ecs.StopInstanceResponse, error) {
+func stopInstance(id string, client *ecs.Client, debugMode *bool) (*ecs.StopInstanceResponse, error) {
 	request := ecs.CreateStopInstanceRequest()
 	request.InstanceId = id
-	request.DryRun = requests.NewBoolean(debugMode)
+	if debugMode != nil {
+		request.DryRun = requests.NewBoolean(*debugMode)
+	}
 	return client.StopInstance(request)
 }
 
