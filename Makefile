@@ -8,19 +8,22 @@ GOGET=$(GOCMD) get
 BINARY_PATH=bin
 BINARY_NAME=node-deleter
 BINARY_CONFIG_NAME=$(BINARY_NAME)-configs.yaml
+# Deploy Platforms
 BINARY_DARWIN_AMD64=$(BINARY_PATH)/darwin/amd64/$(BINARY_NAME)
 BINARY_LINUX_AMD64=$(BINARY_PATH)/linux/amd64/$(BINARY_NAME)
 BINARY_LINUX_ARM64=$(BINARY_PATH)/linux/arm64/$(BINARY_NAME)
 BINARY_ARCHVIE_PATH=archive
 OUTPUT_BIN=output
 
-all: zip $(OUTPUT_BIN)
+all: zip $(OUTPUT_BIN) current-platform-build
     # copy to output directory, so that we could package and deploy it.
 	cp $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz $(OUTPUT_BIN)
-	# important joiner scripts
+	# important deleter scripts
 	cp delete* $(OUTPUT_BIN)
-	# config only for testing, should be replaced when deplyed.
-	cp test/test.yaml $(OUTPUT_BIN)/$(BINARY_CONFIG_NAME)
+	# generate config only for testing, should be replaced when deplyed.
+	$(BINARY_ARCHVIE_PATH)/$(BINARY_NAME) template create -p $(OUTPUT_BIN)/$(BINARY_CONFIG_NAME)
+current-platform-build:
+	$(GOBUILD) -o $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME)
 zip: build $(BINARY_ARCHVIE_PATH)
 	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz bin
 $(BINARY_ARCHVIE_PATH):

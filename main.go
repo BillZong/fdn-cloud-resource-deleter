@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"sync"
@@ -32,16 +33,84 @@ const (
 	debugKeyLong         = "debug"
 )
 
+const (
+	defaultTemplatePath = "./node-deleter-configs.yaml"
+	templateToShow      = `cluster-type: "fixed" # fixed or dynamic. fixed one should provide existed node (not deleted from OpenWhisk cluster yet) list. dynamic one would use cloud node handle process.
+fixed:
+  ssh-port: 12345
+  user-name: "root"
+  ssh-key-file: "./key-20191106" # use private key
+  password: "123456Abc" # use password
+  nodes:
+    - inner-ip: "172.17.0.2"
+      host-name: "a"
+    - inner-ip: "172.17.0.3"
+      host-name: "b"
+    - inner-ip: "172.17.0.4"
+      host-name: "c"
+dynamic:
+  cloud-provider: "aliyun"
+  aliyun:
+    # Required Parameters.
+    # region id devided by aliyun
+    region-id: "cn-shenzhen"
+    # user acccess key id, might be RAM user
+    access-key-id: "123456abcdef"
+    # user access key secret
+    access-key-secret: "asdfasdfasdf"
+    # vpc id 
+    vpc-id: "vpc-abcdefg"
+    # Optional Parameters.
+    # ssh port, default 22
+    ssh-port: 12345
+    # ssh private key path, no need when use password login
+    ssh-key-file: "./key-20191106"
+    # password, no need when use ssh private key login
+    password: "123456Abc"
+    # Debug Parameters
+    # Debug mode. default false
+    debug: false
+# Command Line Parameters. Could be used in yaml, too
+# # node count that want to be delete. default 1
+# node-count:
+#   1`
+)
+
 func main() {
 	app := cli.NewApp()
 
-	app.Name = "AliyunECSDeleter"
-	app.Version = "0.0.1"
-	app.Description = "fdn aliyun 资源移除工具"
+	app.Name = "node-deleter"
+	app.Version = "0.1.0"
+	app.Description = "Tools for deleting invoker nodes from OpenWhisk cluster. First develeopped and used in FDN. Currently support fixed-number-nodes cluster, and aliyun ecs."
 	app.Authors = []cli.Author{
-		{Name: "FDN developper"},
+		{Name: "Bill Zong", Email: "billzong@163.com"},
 	}
 
+	app.Commands = []cli.Command{
+		{
+			Name:  "template",
+			Usage: "options for config yaml template",
+			Subcommands: []cli.Command{
+				{
+					Name:   "show",
+					Usage:  "show the template",
+					Action: showTemplate,
+				},
+				{
+					Name:  "create",
+					Usage: "create (or cover) the tempalte to the path",
+					Flags: []cli.Flag{
+						cli.StringFlag{
+							Name:  "path,p",
+							Usage: "path for the config file, must have.",
+							Value: defaultTemplatePath,
+						},
+					},
+					Action: createTemplate,
+				},
+			},
+		},
+	}
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "config,c",
@@ -84,6 +153,19 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func createTemplate(ctx *cli.Context) error {
+	path := ctx.String("path")
+	if len(path) == 0 {
+		path = defaultTemplatePath
+	}
+	return ioutil.WriteFile(path, []byte(templateToShow), 0644)
+}
+
+func showTemplate(ctx *cli.Context) error {
+	fmt.Println("You could use this config yaml template:\n", templateToShow)
+	return nil
 }
 
 type EcsConfig struct {
