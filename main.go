@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,8 +193,7 @@ func deleteFromOWCluster(ctx *cli.Context) error {
 	}
 
 	if cfg.ClusterType == "fixed" {
-		return fmt.Errorf("fixed type not supported yet")
-		// return handleFixedConfigs(cfg.FixedConfig, *cfg.NodeCount)
+		return handleFixedConfigs(cfg.FixedConfig, *cfg.NodeCount)
 	} else if cfg.ClusterType == "dynamic" {
 		if cfg.DynamicConfig.CloudProvider != "aliyun" {
 			return fmt.Errorf("cloud provider (%v) not supported yet", cfg.DynamicConfig.CloudProvider)
@@ -204,13 +204,48 @@ func deleteFromOWCluster(ctx *cli.Context) error {
 	}
 }
 
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func handleFixedConfigs(cfg *FixedNodeConfig, nodeCount int) error {
+	// got current nodes
+	output, err := exec.Command("bash", "-c", "kubectl get no --show-labels | grep \"openwhisk-role=invoker\" | awk '{print $1}'").Output()
+	if err != nil {
+		fmt.Printf("kubectl failed: %v", err.Error())
+		return err
+	}
+	currentNodeNames := strings.Split(string(output), "\n")
+
+	// find intersection of the configuration and current node set
+	count := 0
+	targetNodes := make([]*NodeInfo, 0)
+	for _, node := range cfg.Nodes {
+		if count >= nodeCount {
+			break
+		}
+		if contains(currentNodeNames, node.HostName) {
+			targetNodes = append(targetNodes, node)
+			count++
+		}
+	}
+
+	// delete nodes
+	return deleteInstancesFromOWCluster(targetNodes, cfg.SSHPort, cfg.UserName, cfg.SSHKeyFile, cfg.Password)
+}
+
 func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
 	client, err := ecs.NewClientWithAccessKey(cfg.RegionID, cfg.AccessID, cfg.AccessSecret)
 	if err != nil {
 		return err
 	}
 
-	// 根据VPC配置读取节点信息
+	// use vpc config to get nodes in this network
 	instances, err := getInstancesOf(cfg.VpcID, client)
 	if err != nil {
 		return err
@@ -220,13 +255,13 @@ func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
 		return fmt.Errorf("no instance to be removed (want %v)", nodeCount)
 	}
 
-	// 筛选节点未按量付费版本并按创建时间排序
+	// filter by post-paid and sort by create time (asc)
 	rets, err := filterNodes(client, instances, nodeCount, cfg.DeleteStrategy)
 	if err != nil {
 		return err
 	}
 
-	// 移除节点标签
+	// remove node labels
 	var port int
 	if cfg.SSHPort != nil {
 		port = *cfg.SSHPort
@@ -244,20 +279,20 @@ func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
 		return err
 	}
 
-	// 拼接ID
+	// concat the instance id
 	var ids []string
 	for _, ret := range rets {
 		ids = append(ids, ret.InstanceId)
 	}
 
-	// 停止N个节点
+	// stop the (machine) instances
 	for _, id := range ids {
 		if _, err := stopInstance(id, client, cfg.Debug); err != nil {
 			return (err)
 		}
 	}
 
-	// 删除N个节点
+	// delete the (machine) instances
 	if len(ids) > 0 {
 		if _, err := deleteInstances(&ids, client, cfg.Debug); err != nil {
 			return err
@@ -283,12 +318,12 @@ func deleteInstancesFromOWCluster(infos []*NodeInfo, nodeSSHPort int, user strin
 	}
 
 	if sshKeyFile != nil && len(*sshKeyFile) > 0 {
-		// 使用私钥文件ssh登陆
+		// use ssh private key
 		_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-s", *sshKeyFile).Output()
 		return err
 	}
 
-	// 使用密码ssh登陆
+	// use password
 	_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-p", *password).Output()
 	return err
 }
@@ -422,7 +457,7 @@ func (ipcr *instancePostChargedCheckResult) Compare(other sslice.SortableElement
 	}
 }
 
-// 查看实例是否为按量付费
+// check if the instances are post-paid type or not
 func checkIfInstancePostCharged(idx int, instanceID string, client *ecs.Client) instancePostChargedCheckResult {
 	request := ecs.CreateDescribeInstanceAttributeRequest()
 	request.InstanceId = instanceID

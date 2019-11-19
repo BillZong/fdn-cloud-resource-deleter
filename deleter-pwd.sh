@@ -6,7 +6,7 @@ exit
 }
 
 # 超时时间
-set timeout 5
+set timeout 4
 
 set host [lindex $argv 0]
 set port [lindex $argv 1]
@@ -25,8 +25,9 @@ expect "$user@"
 send "rm -f /etc/kubernetes/kubelet.conf && rm -f /etc/kubernetes/bootstrap-kubelet.conf && rm -f /etc/kubernetes/pki/ca.crt\r"
 expect "$user@"
 
-send "ps aux | grep kubelet | grep -v grep | awk '{print $2}' | while read pid; do kill -9 $pid; done; echo RET=$?\r"
-expect "RET=0"
+send {$(ps aux | grep kubelet | grep -v grep | awk '{print $2}' | while read pid; do kill -9 $pid; done)}
+send "\r"
+expect "$user@"
 
 send "exit 0\r"
 #expect eof表示结束expect和相应进程会话结束，如果用interact会保持停留在当前进程会话

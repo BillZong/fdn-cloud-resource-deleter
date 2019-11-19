@@ -103,5 +103,5 @@ if [ -n "$namesArr" ]; then
     done
 else
     kubectl label nodes $names openwhisk-role- --overwrite && kubectl drain $names --delete-local-data --ignore-daemonsets --grace-period 10 --force && kubectl delete node $names
-    $deleter_file $host $port $user $key
+    $deleter_file $hosts $port $user $key
 fi
