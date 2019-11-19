@@ -26,7 +26,7 @@ all: zip $(OUTPUT_BIN) current-platform-build
 current-platform-build:
 	$(GOBUILD) -o $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME)
 zip: build $(BINARY_ARCHVIE_PATH)
-	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz bin
+	tar -zcvf $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz $(BINARY_PATH)
 $(BINARY_ARCHVIE_PATH):
 	mkdir -p $(BINARY_ARCHVIE_PATH)
 $(OUTPUT_BIN):
