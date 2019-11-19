@@ -16,10 +16,11 @@ BINARY_ARCHVIE_PATH=archive
 OUTPUT_BIN=output
 
 all: zip $(OUTPUT_BIN) current-platform-build
-    # copy to output directory, so that we could package and deploy it.
+	# copy to output directory, so that we could package and deploy it.
 	cp $(BINARY_ARCHVIE_PATH)/$(BINARY_NAME).tar.gz $(OUTPUT_BIN)
 	# important deleter scripts
 	cp delete* $(OUTPUT_BIN)
+	chmod +x $(OUTPUT_BIN)/delete*
 	# generate config only for testing, should be replaced when deplyed.
 	$(BINARY_ARCHVIE_PATH)/$(BINARY_NAME) template create -p $(OUTPUT_BIN)/$(BINARY_CONFIG_NAME)
 current-platform-build:
