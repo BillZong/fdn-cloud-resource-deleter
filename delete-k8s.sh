@@ -7,10 +7,10 @@ sysname=`uname`
 # params analyzing
 if [ ${sysname}='Darwin' ]; then
     # this shell only works on Mac and bash now.
-    ARGS=`getopt h:n:u:p:P:s: $@`
+    ARGS=`getopt h:n:u:p:P:s:d: $@`
 elif [ ${sysname}='Linux' || ${sysname}='Unix' ]; then
     # this only works on linux/unix.
-    ARGS=`getopt -o h:n:u:p:P:s: -l hosts:,names:,user:,password:,port:ssh-file: -- "$@"`
+    ARGS=`getopt -o h:n:u:p:P:s:d: -l hosts:,names:,user:,password:,port:,ssh-file:,working-directory: -- "$@"`
 else
     echo "Windows not supported yet"
 fi
@@ -65,6 +65,10 @@ do
             sshFile=$2
             shift 2
             ;;
+        -d|--working-directory)
+            workingDirectory=$2
+            shift 2
+            ;;
         --)
             shift;
             break;
@@ -80,11 +84,15 @@ if [ -z $user ]; then
     user="root"
 fi
 
+if [ -z "$workingDirectory" ]; then
+    workingDirectory="."
+fi
+
 if [ -n "$sshFile" ]; then
-    deleter_file="./deleter-key.sh"
+    deleter_file="$workingDirectory/deleter-key.sh"
     key=$sshFile
 elif [ -n "$password" ]; then
-    deleter_file="./deleter-pwd.sh"
+    deleter_file="$workingDirectory/deleter-pwd.sh"
     key=$password
 else
     echo "no ssh key file and password, could not login"

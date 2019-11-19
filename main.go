@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	configFilePathLongFlag = "config"
-	nodeCountLongFlag      = "node-count"
+	configFilePathLongFlag   = "config"
+	nodeCountLongFlag        = "node-count"
+	workingDirectoryLongFlag = "working-directory"
 )
 
 const (
@@ -64,7 +65,9 @@ dynamic:
 # Command Line Parameters. Could be used in yaml, too
 # # node count that want to be delete. default 1
 # node-count:
-#   1`
+# node-count: 1
+# # working directory for the joiner cmd and scripts default "/root/node-handler"
+# working-directory: "."`
 )
 
 func main() {
@@ -112,6 +115,11 @@ func main() {
 			Name:  nodeCountLongFlag,
 			Usage: "node count that want to be join",
 			Value: 1,
+		},
+		cli.StringFlag{
+			Name:  "working-directory,d",
+			Usage: "working directory for the joiner cmd and scripts",
+			Value: "/root/node-handler",
 		},
 	}
 	app.Action = deleteFromOWCluster
@@ -166,10 +174,11 @@ type DynamicNodeConfig struct {
 }
 
 type TopLevelConfigs struct {
-	ClusterType   string             `yaml:"cluster-type"`
-	FixedConfig   *FixedNodeConfig   `yaml:"fixed,omitempty"`
-	DynamicConfig *DynamicNodeConfig `yaml:"dynamic,omitempty"`
-	NodeCount     *int               `yaml:"node-count,omitempty"`
+	ClusterType      string             `yaml:"cluster-type"`
+	FixedConfig      *FixedNodeConfig   `yaml:"fixed,omitempty"`
+	DynamicConfig    *DynamicNodeConfig `yaml:"dynamic,omitempty"`
+	NodeCount        *int               `yaml:"node-count,omitempty"`
+	WorkingDirectory *string            `yaml:"working-directory,omitempty"`
 }
 
 func deleteFromOWCluster(ctx *cli.Context) error {
@@ -191,14 +200,18 @@ func deleteFromOWCluster(ctx *cli.Context) error {
 		nodeCount := ctx.Int(nodeCountLongFlag)
 		cfg.NodeCount = &nodeCount
 	}
+	if cfg.WorkingDirectory == nil {
+		workingDirectory := ctx.String(workingDirectoryLongFlag)
+		cfg.WorkingDirectory = &workingDirectory
+	}
 
 	if cfg.ClusterType == "fixed" {
-		return handleFixedConfigs(cfg.FixedConfig, *cfg.NodeCount)
+		return handleFixedConfigs(cfg.FixedConfig, *cfg.NodeCount, *cfg.WorkingDirectory)
 	} else if cfg.ClusterType == "dynamic" {
 		if cfg.DynamicConfig.CloudProvider != "aliyun" {
 			return fmt.Errorf("cloud provider (%v) not supported yet", cfg.DynamicConfig.CloudProvider)
 		}
-		return handleAliyunECSConfigs(cfg.DynamicConfig.AliyunConfig, *cfg.NodeCount)
+		return handleAliyunECSConfigs(cfg.DynamicConfig.AliyunConfig, *cfg.NodeCount, *cfg.WorkingDirectory)
 	} else {
 		return fmt.Errorf("cluster type (%v) not supported yet", cfg.ClusterType)
 	}
@@ -213,7 +226,7 @@ func contains(s []string, e string) bool {
 	return false
 }
 
-func handleFixedConfigs(cfg *FixedNodeConfig, nodeCount int) error {
+func handleFixedConfigs(cfg *FixedNodeConfig, nodeCount int, workingDirectory string) error {
 	// got current nodes
 	output, err := exec.Command("bash", "-c", "kubectl get no --show-labels | grep \"openwhisk-role=invoker\" | awk '{print $1}'").Output()
 	if err != nil {
@@ -236,10 +249,10 @@ func handleFixedConfigs(cfg *FixedNodeConfig, nodeCount int) error {
 	}
 
 	// delete nodes
-	return deleteInstancesFromOWCluster(targetNodes, cfg.SSHPort, cfg.UserName, cfg.SSHKeyFile, cfg.Password)
+	return deleteInstancesFromOWCluster(targetNodes, cfg.SSHPort, cfg.UserName, cfg.SSHKeyFile, cfg.Password, workingDirectory)
 }
 
-func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
+func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int, workingDirectory string) error {
 	client, err := ecs.NewClientWithAccessKey(cfg.RegionID, cfg.AccessID, cfg.AccessSecret)
 	if err != nil {
 		return err
@@ -275,7 +288,7 @@ func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
 			HostName: ret.HostName,
 		})
 	}
-	if err := deleteInstancesFromOWCluster(infos, port, "root", cfg.Password, cfg.SSHKeyFile); err != nil {
+	if err := deleteInstancesFromOWCluster(infos, port, "root", cfg.Password, cfg.SSHKeyFile, workingDirectory); err != nil {
 		return err
 	}
 
@@ -302,7 +315,7 @@ func handleAliyunECSConfigs(cfg *AliyunEcsConfig, nodeCount int) error {
 	return nil
 }
 
-func deleteInstancesFromOWCluster(infos []*NodeInfo, nodeSSHPort int, user string, sshKeyFile, password *string) error {
+func deleteInstancesFromOWCluster(infos []*NodeInfo, nodeSSHPort int, user string, sshKeyFile, password *string, workingDirectory string) error {
 	if len(infos) == 0 {
 		return nil
 	}
@@ -319,12 +332,12 @@ func deleteInstancesFromOWCluster(infos []*NodeInfo, nodeSSHPort int, user strin
 
 	if sshKeyFile != nil && len(*sshKeyFile) > 0 {
 		// use ssh private key
-		_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-s", *sshKeyFile).Output()
+		_, err := exec.Command(workingDirectory+"/delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-s", *sshKeyFile, "-d", workingDirectory).Output()
 		return err
 	}
 
 	// use password
-	_, err := exec.Command("./delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-p", *password).Output()
+	_, err := exec.Command(workingDirectory+"/delete-k8s.sh", "-h", ips, "-P", strconv.Itoa(nodeSSHPort), "-n", names, "-u", user, "-p", *password, "-d", workingDirectory).Output()
 	return err
 }
 
