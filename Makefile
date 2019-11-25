@@ -14,6 +14,7 @@ BINARY_LINUX_AMD64=$(BINARY_PATH)/linux/amd64/$(BINARY_NAME)
 BINARY_LINUX_ARM64=$(BINARY_PATH)/linux/arm64/$(BINARY_NAME)
 BINARY_ARCHVIE_PATH=archive
 OUTPUT_BIN=output
+BINARY_LINUX_AMD64_CP=$(OUTPUT_BIN)/$(BINARY_NAME)-linux-amd64
 
 all: zip $(OUTPUT_BIN) current-platform-build
 	# copy to output directory, so that we could package and deploy it.
@@ -33,6 +34,8 @@ $(OUTPUT_BIN):
 	mkdir -p $(OUTPUT_BIN)
 #build: build-mac build-linux
 build: build-linux
+build: build-linux $(OUTPUT_BIN)
+	cp -f $(BINARY_LINUX_AMD64) $(BINARY_LINUX_AMD64_CP)
 test: 
 	$(GOTEST) -v ./...
 cleanZip:
